@@ -242,6 +242,7 @@ resource workerApp 'Microsoft.App/containerApps@2023-05-01' = {
                 namespace: serviceBus.name
                 messageCount: '10'
               }
+              #disable-next-line BCP037
               identity: managedIdentity.id
             }
           }
