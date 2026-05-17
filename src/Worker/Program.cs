@@ -20,12 +20,13 @@ builder.Services.AddApplicationInsightsTelemetryWorkerService();
 builder.Services.AddSingleton(sp =>
 {
     var config = sp.GetRequiredService<IConfiguration>();
-    var sbNamespace = config["ServiceBusNamespace"];
-    if (string.IsNullOrEmpty(sbNamespace))
-        throw new ArgumentNullException(nameof(sbNamespace));
+    var sbConn = config["ServiceBusConnection"];
+    if (string.IsNullOrEmpty(sbConn))
+        throw new ArgumentNullException(nameof(sbConn));
     
-    return new ServiceBusClient(sbNamespace, new DefaultAzureCredential());
+    return new ServiceBusClient(sbConn);
 });
+
 
 // 4. Register Background Service
 builder.Services.AddHostedService<WorkProcessor>();
