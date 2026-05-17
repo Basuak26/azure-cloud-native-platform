@@ -5,113 +5,75 @@ trigger:
 
 variables:
   - group: azure-platform-vars
-  - name: buildConfiguration
-    value: 'Release'
-  - name: dockerRegistryServiceConnection
-    value: 'AcrConnection'
   - name: azureResourceManagerConnection
     value: 'ArmConnection'
 
 stages:
-- stage: Build
-  displayName: 'Build and Push'
+- stage: Deploy_DEV
+  displayName: 'Deploy to DEV Environment'
+  variables:
+    envName: 'dev'
+    rgName: 'rg-azplat-dev'
+    location: 'eastus'
   jobs:
-  - job: Build
+  - job: ProvisionAndBuild
     pool:
       vmImage: 'ubuntu-latest'
     steps:
-    - task: DotNetCoreCLI@2
-      displayName: 'Restore API'
+    # 1. Provision Infrastructure First (Uses Bicep default images)
+    - task: AzureResourceManagerTemplateDeployment@3
+      displayName: 'Provision Infrastructure (Bicep)'
       inputs:
-        command: 'restore'
-        projects: 'src/Api/Api.csproj'
+        deploymentScope: 'Resource Group'
+        azureResourceManagerConnection: '$(azureResourceManagerConnection)'
+        subscriptionId: '$(subscriptionId)'
+        action: 'Create Or Update Resource Group'
+        resourceGroupName: '$(rgName)'
+        location: '$(location)'
+        templateLocation: 'Linked artifact'
+        csmFile: 'infra/main.bicep'
+        overrideParameters: '-envName $(envName)'
+        deploymentMode: 'Incremental'
+        deploymentOutputs: 'bicepOutputs'
 
-    - task: DotNetCoreCLI@2
-      displayName: 'Build API'
+    # 2. Extract ACR Login Server output from Bicep
+    - task: PowerShell@2
+      displayName: 'Parse Bicep Outputs'
       inputs:
-        command: 'build'
-        projects: 'src/Api/Api.csproj'
-        arguments: '--configuration $(buildConfiguration)'
+        targetType: 'inline'
+        script: |
+          $outputs = ConvertFrom-Json '$(bicepOutputs)'
+          $acrLoginServer = $outputs.acrLoginServer.value
+          Write-Host "##vso[task.setvariable variable=acrLoginServer]$acrLoginServer"
+          Write-Host "Dynamically fetched ACR: $acrLoginServer"
 
-    - task: Docker@2
-      displayName: 'Build and Push API Image'
+    # 3. Build & Push using standard Azure CLI (No Docker connection needed!)
+    - task: AzureCLI@2
+      displayName: 'Build and Push Docker Images'
       inputs:
-        containerRegistry: '$(dockerRegistryServiceConnection)'
-        repository: 'api'
-        command: 'buildAndPush'
-        Dockerfile: 'src/Api/Dockerfile'
-        tags: |
-          $(Build.BuildId)
-          latest
+        azureSubscription: '$(azureResourceManagerConnection)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Log into ACR using ARM credentials
+          ACR_NAME=$(echo $(acrLoginServer) | cut -d'.' -f1)
+          az acr login --name $ACR_NAME
+          
+          # Build and push API
+          docker build -f src/Api/Dockerfile -t $(acrLoginServer)/api:$(Build.BuildId) src/Api
+          docker push $(acrLoginServer)/api:$(Build.BuildId)
+          
+          # Build and push Worker
+          docker build -f src/Worker/Dockerfile -t $(acrLoginServer)/worker:$(Build.BuildId) src/Worker
+          docker push $(acrLoginServer)/worker:$(Build.BuildId)
 
-    - task: Docker@2
-      displayName: 'Build and Push Worker Image'
+    # 4. Update the Container Apps with our newly pushed images
+    - task: AzureCLI@2
+      displayName: 'Update Container Apps with new code'
       inputs:
-        containerRegistry: '$(dockerRegistryServiceConnection)'
-        repository: 'worker'
-        command: 'buildAndPush'
-        Dockerfile: 'src/Worker/Dockerfile'
-        tags: |
-          $(Build.BuildId)
-          latest
-
-    - publish: infra
-      artifact: infra
-
-- stage: Deploy_DEV
-  displayName: 'Deploy to DEV'
-  dependsOn: Build
-  condition: succeeded()
-  variables:
-    envName: 'dev'
-  jobs:
-  - deployment: DeployInfra
-    environment: 'DEV'
-    pool:
-      vmImage: 'ubuntu-latest'
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - task: AzureResourceManagerTemplateDeployment@3
-            displayName: 'Deploy Bicep to DEV'
-            inputs:
-              deploymentScope: 'Resource Group'
-              azureResourceManagerConnection: '$(azureResourceManagerConnection)'
-              subscriptionId: '$(subscriptionId)'
-              action: 'Create Or Update Resource Group'
-              resourceGroupName: 'rg-azplat-dev'
-              location: 'eastus'
-              templateLocation: 'Linked artifact'
-              csmFile: '$(Pipeline.Workspace)/infra/main.bicep'
-              overrideParameters: '-envName dev -apiImage $(acrLoginServer)/api:$(Build.BuildId) -workerImage $(acrLoginServer)/worker:$(Build.BuildId)'
-              deploymentMode: 'Incremental'
-
-- stage: Deploy_PPD
-  displayName: 'Deploy to PPD'
-  dependsOn: Deploy_DEV
-  condition: succeeded()
-  variables:
-    envName: 'ppd'
-  jobs:
-  - deployment: DeployInfra
-    environment: 'PPD' # Pre-prod environment (needs manual approval in ADO)
-    pool:
-      vmImage: 'ubuntu-latest'
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - task: AzureResourceManagerTemplateDeployment@3
-            displayName: 'Deploy Bicep to PPD'
-            inputs:
-              deploymentScope: 'Resource Group'
-              azureResourceManagerConnection: '$(azureResourceManagerConnection)'
-              subscriptionId: '$(subscriptionId)'
-              action: 'Create Or Update Resource Group'
-              resourceGroupName: 'rg-azplat-ppd'
-              location: 'eastus'
-              templateLocation: 'Linked artifact'
-              csmFile: '$(Pipeline.Workspace)/infra/main.bicep'
-              overrideParameters: '-envName ppd -apiImage $(acrLoginServer)/api:$(Build.BuildId) -workerImage $(acrLoginServer)/worker:$(Build.BuildId)'
-              deploymentMode: 'Incremental'
+        azureSubscription: '$(azureResourceManagerConnection)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az containerapp update --name ca-api-$(envName) --resource-group $(rgName) --image $(acrLoginServer)/api:$(Build.BuildId)
+          az containerapp update --name ca-worker-$(envName) --resource-group $(rgName) --image $(acrLoginServer)/worker:$(Build.BuildId)
