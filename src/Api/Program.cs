@@ -28,13 +28,13 @@ builder.Services.AddHealthChecks()
 builder.Services.AddSingleton(sp =>
 {
     var config = sp.GetRequiredService<IConfiguration>();
-    var sbNamespace = config["ServiceBusNamespace"]; // e.g., mynamespace.servicebus.windows.net
-    if (string.IsNullOrEmpty(sbNamespace))
-        throw new ArgumentNullException(nameof(sbNamespace));
+    var sbConn = config["ServiceBusConnection"];
+    if (string.IsNullOrEmpty(sbConn))
+        throw new ArgumentNullException(nameof(sbConn));
     
-    // DefaultAzureCredential automatically picks up Managed Identity in Azure Container Apps
-    return new ServiceBusClient(sbNamespace, new DefaultAzureCredential());
+    return new ServiceBusClient(sbConn);
 });
+
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
