@@ -15,26 +15,26 @@ param apiImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:la
 param workerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 
 var resourceSuffix = '${appName}${envName}${uniqueString(resourceGroup().id)}'
+var shortSuffix = take(resourceSuffix, 20) // Forces the name to be short enough for Key Vault!
 
 // 1. User Assigned Managed Identity
 resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: 'mi-${resourceSuffix}'
+  name: 'mi-${shortSuffix}'
   location: location
 }
 
 // 2. Azure Container Registry
 resource acr 'Microsoft.ContainerRegistry/registries@2023-01-01-preview' = {
-  name: 'acr${resourceSuffix}'
+  name: 'acr${shortSuffix}'
   location: location
   sku: {
     name: 'Basic'
   }
   properties: {
-    adminUserEnabled: false // Best practice: Use Managed Identity instead
+    adminUserEnabled: false
   }
 }
 
-// Role Assignment: AcrPull for Managed Identity
 resource acrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(acr.id, managedIdentity.id, 'AcrPull')
   scope: acr
@@ -47,7 +47,7 @@ resource acrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 // 3. Log Analytics & Application Insights
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
-  name: 'log-${resourceSuffix}'
+  name: 'log-${shortSuffix}'
   location: location
   properties: {
     sku: {
@@ -57,7 +57,7 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
 }
 
 resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
-  name: 'appi-${resourceSuffix}'
+  name: 'appi-${shortSuffix}'
   location: location
   kind: 'web'
   properties: {
@@ -68,7 +68,7 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
 
 // 4. Azure Key Vault
 resource keyVault 'Microsoft.KeyVault/vaults@2023-02-01' = {
-  name: 'kv-${resourceSuffix}'
+  name: take('kv-${shortSuffix}', 24)
   location: location
   properties: {
     sku: {
@@ -76,11 +76,10 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-02-01' = {
       name: 'standard'
     }
     tenantId: subscription().tenantId
-    enableRbacAuthorization: true // Best practice: Use Azure RBAC for Key Vault
+    enableRbacAuthorization: true
   }
 }
 
-// Role Assignment: Key Vault Secrets User
 resource kvRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, managedIdentity.id, 'KeyVaultSecretsUser')
   scope: keyVault
@@ -93,7 +92,7 @@ resource kvRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 // 5. Azure Service Bus
 resource serviceBus 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' = {
-  name: 'sb-${resourceSuffix}'
+  name: take('sb-${shortSuffix}', 50)
   location: location
   sku: {
     name: 'Standard'
@@ -109,7 +108,6 @@ resource sbQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
   }
 }
 
-// Role Assignment: Service Bus Data Owner
 resource sbRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(serviceBus.id, managedIdentity.id, 'ServiceBusDataOwner')
   scope: serviceBus
@@ -122,7 +120,7 @@ resource sbRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 // 6. Azure Container Apps Environment
 resource acaEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
-  name: 'cae-${resourceSuffix}'
+  name: 'cae-${shortSuffix}'
   location: location
   properties: {
     appLogsConfiguration: {
@@ -196,7 +194,7 @@ resource apiApp 'Microsoft.App/containerApps@2023-05-01' = {
   }
 }
 
-// 8. Worker Container App (with KEDA scaling on Service Bus)
+// 8. Worker Container App
 resource workerApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'ca-worker-${envName}'
   location: location
@@ -230,7 +228,7 @@ resource workerApp 'Microsoft.App/containerApps@2023-05-01' = {
         }
       ]
       scale: {
-        minReplicas: 0 // Scales to 0 when queue is empty!
+        minReplicas: 0
         maxReplicas: 10
         rules: [
           {
@@ -252,5 +250,5 @@ resource workerApp 'Microsoft.App/containerApps@2023-05-01' = {
   }
 }
 
-output apiFqdn string = apiApp.properties.configuration.ingress.fqdn
 output acrLoginServer string = acr.properties.loginServer
+output apiFqdn string = apiApp.properties.configuration.ingress.fqdn
